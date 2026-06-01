@@ -6,8 +6,17 @@ const COLS := 16
 const ROWS := 12
 
 const EMPTY := 0
-const BRICK := 1
-const STEEL := 2
+const BRICK := 1   # Easy wall: one hit and it's gone (full passage).
+const STEEL := 2   # Gated wall: blocks shots, takes no damage until a special weapon exists.
+const HARD := 3    # Hard wall: chip it down over several hits, then it becomes RUBBLE.
+const RUBBLE := 4  # What a HARD wall leaves: blocks tanks, but bullets fly over it.
+const PIT := 5     # Terrain: blocks tanks, bullets cross. Permanent (can't be cleared).
+const BUSH := 6    # Terrain: passable by tanks and bullets. Concealment is inert until enemy vision exists.
+
+const HARD_HP := 3
+
+# Map characters -> tile types.
+const CHAR_TILE := {"B": BRICK, "S": STEEL, "H": HARD, "P": PIT, "T": BUSH}
 
 const TEAM_PLAYER := 0
 const HIT_RADIUS := 22.0
@@ -18,17 +27,18 @@ const MAX_ALIVE := 4  # How many can be on the field at once.
 
 enum State { PLAYING, WON, LOST }
 
-# Temporary handcrafted layout (. empty, B brick, S steel). Real maps + editor later.
+# Temporary handcrafted layout. . empty, B brick (easy), H hard, S steel (gated),
+# P pit, T bush. Real maps + editor later.
 const MAP := [
 	"................",
 	"................",
-	"..BBB.....BBB...",
-	"..B.B.....B.B...",
-	"..BBB.....BBB...",
-	".......SS.......",
-	".......SS.......",
-	"....BB......BB..",
-	"....BB......BB..",
+	"..BBB..HH..BBB..",
+	"..B.B..HH..B.B..",
+	"..BBB..HH..BBB..",
+	"...PP..SS..PP...",
+	"...PP..SS..PP...",
+	"..TT.BB..BB.TT..",
+	"..TT.BB..BB.TT..",
 	"................",
 	"................",
 	"................",
@@ -37,6 +47,7 @@ const MAP := [
 const ENEMY_SPAWNS := [Vector2i(2, 0), Vector2i(8, 0), Vector2i(13, 0)]
 
 var grid := []
+var hp := []  # Parallel to grid; only HARD tiles use it.
 var state := State.PLAYING
 var lives := START_LIVES
 var to_spawn := 0  # Enemies still waiting in the pool.
@@ -131,19 +142,18 @@ func _lose() -> void:
 
 func _load_map() -> void:
 	grid.clear()
+	hp.clear()
 	for y in range(ROWS):
 		var line: String = MAP[y] if y < MAP.size() else ""
 		var row := []
+		var hp_row := []
 		for x in range(COLS):
 			var ch := line.substr(x, 1) if x < line.length() else "."
-			match ch:
-				"B":
-					row.append(BRICK)
-				"S":
-					row.append(STEEL)
-				_:
-					row.append(EMPTY)
+			var t: int = CHAR_TILE.get(ch, EMPTY)
+			row.append(t)
+			hp_row.append(HARD_HP if t == HARD else 0)
 		grid.append(row)
+		hp.append(hp_row)
 	queue_redraw()
 
 func _cell(world: Vector2) -> Vector2i:
@@ -154,8 +164,10 @@ func _tile_at(cell: Vector2i) -> int:
 		return STEEL  # Out of bounds behaves like an unbreakable wall.
 	return grid[cell.y][cell.x]
 
+# Blocks tank movement. Everything but empty floor and bush stops a tank.
 func is_solid(world: Vector2) -> bool:
-	return _tile_at(_cell(world)) != EMPTY
+	var t := _tile_at(_cell(world))
+	return t != EMPTY and t != BUSH
 
 func bullet_hits(b) -> bool:
 	var cell := _cell(b.position)
@@ -164,8 +176,15 @@ func bullet_hits(b) -> bool:
 		grid[cell.y][cell.x] = EMPTY
 		queue_redraw()
 		return true
-	if t == STEEL:
+	if t == HARD:
+		hp[cell.y][cell.x] -= 1
+		if hp[cell.y][cell.x] <= 0:
+			grid[cell.y][cell.x] = RUBBLE  # Chipped down: bullets now fly over, tanks still can't pass.
+		queue_redraw()
 		return true
+	if t == STEEL:
+		return true  # Gated wall: stops the shot, takes no damage.
+	# RUBBLE, PIT, BUSH, EMPTY: the bullet flies over. Check for tank hits.
 	if b.team == TEAM_PLAYER:
 		for e in get_tree().get_nodes_in_group("enemies"):
 			if e.position.distance_to(b.position) < HIT_RADIUS:
@@ -189,12 +208,41 @@ func _draw() -> void:
 			if t == EMPTY:
 				continue
 			var r := Rect2(x * TILE, y * TILE, TILE, TILE).grow(-2)
-			if t == BRICK:
-				draw_rect(r, Color(0.6, 0.32, 0.2))
-			else:
-				draw_rect(r, Color(0.55, 0.55, 0.62))
+			match t:
+				BRICK:
+					draw_rect(r, Color(0.6, 0.32, 0.2))
+				STEEL:
+					draw_rect(r, Color(0.55, 0.55, 0.62))
+				HARD:
+					_draw_hard(r, hp[y][x])
+				RUBBLE:
+					_draw_rubble(x, y)
+				PIT:
+					_draw_pit(r)
+				BUSH:
+					draw_rect(r, Color(0.2, 0.5, 0.25, 0.55))
 	var grid_col := Color(1, 1, 1, 0.06)
 	for c in range(COLS + 1):
 		draw_line(Vector2(c * TILE, 0), Vector2(c * TILE, h), grid_col)
 	for rr in range(ROWS + 1):
 		draw_line(Vector2(0, rr * TILE), Vector2(w, rr * TILE), grid_col)
+
+func _draw_hard(r: Rect2, h: int) -> void:
+	draw_rect(r, Color(0.42, 0.45, 0.55))
+	# Cracks deepen as it's chipped down toward rubble.
+	var dmg := HARD_HP - h
+	if dmg >= 1:
+		draw_line(r.position, r.end, Color(0, 0, 0, 0.35), 2.0)
+	if dmg >= 2:
+		draw_line(Vector2(r.end.x, r.position.y), Vector2(r.position.x, r.end.y), Color(0, 0, 0, 0.35), 2.0)
+
+func _draw_rubble(x: int, y: int) -> void:
+	# Low debris: scattered chunks so it clearly reads as "shoot over, can't drive over."
+	var base := Vector2(x * TILE, y * TILE)
+	var col := Color(0.4, 0.3, 0.22)
+	for c in [Vector2(8, 12), Vector2(36, 8), Vector2(20, 34), Vector2(42, 40), Vector2(6, 44)]:
+		draw_rect(Rect2(base + c, Vector2(15, 12)), col)
+
+func _draw_pit(r: Rect2) -> void:
+	draw_rect(r, Color(0.06, 0.06, 0.09))
+	draw_rect(r.grow(-6), Color(0.02, 0.02, 0.04))
