@@ -27,6 +27,12 @@ const HEALTH_DROP_CHANCE := 0.25  # Chance a killed enemy drops a health pickup.
 const TOTAL_ENEMIES := 8  # Whole pool to clear for a win.
 const MAX_ALIVE := 4  # How many can be on the field at once.
 
+# Enemy vision (fog of war): an enemy only knows where you are if it can SEE you.
+const DETECT_RADIUS := 340.0       # Sight range along a clear line.
+const FOLIAGE_PENALTY := 120.0     # Each foliage tile on the sightline cuts that range.
+const FOLIAGE_MIN_RANGE := 70.0    # Closest they can still spot you through heavy foliage.
+const ALERT_SHARE_RADIUS := 260.0  # Spotting you also wakes enemies within this radius.
+
 enum State { PLAYING, WON, LOST }
 
 # Temporary handcrafted layout. . empty, B brick (easy), H hard, S steel (gated),
@@ -113,6 +119,7 @@ func _spawn_one() -> void:
 	var e := Node2D.new()
 	e.set_script(load("res://enemy.gd"))
 	e.position = Vector2(c.x * TILE + HALF, c.y * TILE + HALF)
+	e.set("kind", 1 if randf() < 0.34 else 0)  # 1 = SKIRMISHER, else PAWN
 	add_child(e)
 
 func _on_enemy_killed(at: Vector2) -> void:
@@ -192,6 +199,35 @@ func _tile_at(cell: Vector2i) -> int:
 func is_solid(world: Vector2) -> bool:
 	var t := _tile_at(_cell(world))
 	return t != EMPTY and t != BUSH
+
+# Can an enemy at `from` see the player at `to`? Solid walls hard-block the line;
+# foliage doesn't block but shortens the range, so they must close in to spot you.
+func enemy_can_see(from: Vector2, to: Vector2) -> bool:
+	var dist := from.distance_to(to)
+	if dist > DETECT_RADIUS:
+		return false
+	var foliage := 0
+	var seen := {}
+	var steps := int(dist / 16.0) + 1
+	for i in range(1, steps + 1):
+		var pt: Vector2 = from.lerp(to, float(i) / float(steps))
+		var c := _cell(pt)
+		if seen.has(c):
+			continue
+		seen[c] = true
+		var t := _tile_at(c)
+		if t == BRICK or t == STEEL or t == HARD:
+			return false  # A solid wall breaks the line of sight.
+		elif t == BUSH:
+			foliage += 1
+	var effective: float = max(FOLIAGE_MIN_RANGE, DETECT_RADIUS - foliage * FOLIAGE_PENALTY)
+	return dist <= effective
+
+# An enemy that just spotted you wakes its neighbors and hands them your position.
+func alert_near(at: Vector2, seen: Vector2) -> void:
+	for e in get_tree().get_nodes_in_group("enemies"):
+		if e.position.distance_to(at) <= ALERT_SHARE_RADIUS:
+			e.receive_alert(seen)
 
 func bullet_hits(b) -> bool:
 	var cell := _cell(b.position)
