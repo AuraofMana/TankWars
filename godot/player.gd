@@ -8,7 +8,11 @@ const KEYS := {
 	KEY_D: Vector2.RIGHT,
 }
 
+const PLAYER_INVULN := 0.8  # I-frames after a hit, so a crossfire can't instagib you.
+const RESPAWN_INVULN := 2.0  # Longer grace on spawn/respawn to get clear of danger.
+
 var _prev := {}
+var invuln := 0.0
 var _spawn := Vector2.ZERO
 
 func _ready() -> void:
@@ -20,13 +24,22 @@ func _ready() -> void:
 	_spawn = _cell_center(8, 9)
 	position = _spawn
 	add_to_group("player")
+	invuln = RESPAWN_INVULN  # Spawn grace so you never appear straight into a bullet.
 	for k in KEYS:
 		_prev[k] = false
 
-func _decide(_delta: float) -> void:
+func _decide(delta: float) -> void:
+	if invuln > 0.0:
+		invuln -= delta
+		modulate.a = 0.35 if int(invuln * 12.0) % 2 == 0 else 1.0
+	else:
+		modulate.a = 1.0
 	_read_input()
 	if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
 		fire()
+
+func is_invulnerable() -> bool:
+	return invuln > 0.0
 
 func _read_input() -> void:
 	# Last key pressed wins; if it's released, fall back to anything still held.
@@ -51,7 +64,12 @@ func _any_held() -> Vector2:
 	return Vector2.ZERO
 
 func hit() -> void:
-	# No lives yet: just reset to spawn.
+	# Stay put; health is the buffer. Brief i-frames so the next bullet doesn't chain.
+	invuln = PLAYER_INVULN
+
+func respawn() -> void:
+	# Lost a life: back to spawn at full health, with grace.
 	position = _spawn
 	facing = Vector2.DOWN
 	want = Vector2.ZERO
+	invuln = RESPAWN_INVULN

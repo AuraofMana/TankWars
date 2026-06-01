@@ -21,7 +21,9 @@ const CHAR_TILE := {"B": BRICK, "S": STEEL, "H": HARD, "P": PIT, "T": BUSH}
 const TEAM_PLAYER := 0
 const HIT_RADIUS := 22.0
 
-const START_LIVES := 3
+const START_LIVES := 3   # Lose all health -> lose a life and respawn. Out of lives = defeat.
+const MAX_HEALTH := 3
+const HEALTH_DROP_CHANCE := 0.25  # Chance a killed enemy drops a health pickup.
 const TOTAL_ENEMIES := 8  # Whole pool to clear for a win.
 const MAX_ALIVE := 4  # How many can be on the field at once.
 
@@ -50,6 +52,7 @@ var grid := []
 var hp := []  # Parallel to grid; only HARD tiles use it.
 var state := State.PLAYING
 var lives := START_LIVES
+var health := MAX_HEALTH
 var to_spawn := 0  # Enemies still waiting in the pool.
 var alive := 0  # Enemies currently on the field.
 var spawn_index := 0
@@ -61,6 +64,7 @@ func _ready() -> void:
 	_build_ui()
 	_load_map()
 	lives = START_LIVES
+	health = MAX_HEALTH
 	to_spawn = TOTAL_ENEMIES
 	alive = 0
 	state = State.PLAYING
@@ -93,7 +97,7 @@ func _build_ui() -> void:
 	layer.add_child(center_label)
 
 func _update_hud() -> void:
-	hud_label.text = "Lives: %d     Enemies left: %d" % [lives, alive + to_spawn]
+	hud_label.text = "Lives: %d     Health: %d     Enemies left: %d" % [lives, health, alive + to_spawn]
 
 # --- Enemy pool ---
 
@@ -111,22 +115,42 @@ func _spawn_one() -> void:
 	e.position = Vector2(c.x * TILE + HALF, c.y * TILE + HALF)
 	add_child(e)
 
-func _on_enemy_killed() -> void:
+func _on_enemy_killed(at: Vector2) -> void:
 	alive -= 1
+	if randf() < HEALTH_DROP_CHANCE:
+		_spawn_health(at)
 	_refill_enemies()
 	_update_hud()
 	if state == State.PLAYING and alive <= 0 and to_spawn <= 0:
 		_win()
 
 func _on_player_hit() -> void:
-	lives -= 1
-	_update_hud()
-	if lives <= 0:
-		_lose()
-	else:
-		var p := get_tree().get_first_node_in_group("player")
+	var p := get_tree().get_first_node_in_group("player")
+	if p and p.is_invulnerable():
+		return  # Still in i-frames from the last hit.
+	health -= 1
+	if health <= 0:
+		lives -= 1
+		if lives <= 0:
+			_update_hud()
+			_lose()
+			return
+		health = MAX_HEALTH  # New life, full health.
 		if p:
-			p.hit()
+			p.respawn()
+	elif p:
+		p.hit()
+	_update_hud()
+
+func heal() -> void:
+	health = min(health + 1, MAX_HEALTH)
+	_update_hud()
+
+func _spawn_health(at: Vector2) -> void:
+	var h := Node2D.new()
+	h.set_script(load("res://health_pickup.gd"))
+	h.position = at
+	add_child(h)
 
 func _win() -> void:
 	state = State.WON
@@ -188,8 +212,9 @@ func bullet_hits(b) -> bool:
 	if b.team == TEAM_PLAYER:
 		for e in get_tree().get_nodes_in_group("enemies"):
 			if e.position.distance_to(b.position) < HIT_RADIUS:
+				var ep: Vector2 = e.position
 				e.kill()
-				_on_enemy_killed()
+				_on_enemy_killed(ep)
 				return true
 	else:
 		var p := get_tree().get_first_node_in_group("player")
