@@ -30,20 +30,52 @@ var team := TEAM_PLAYER
 var hull_color := Color(0.45, 0.8, 0.45)
 var barrel_color := Color(0.2, 0.5, 0.2)
 var blocked := false  # True when the last move was stopped by a wall or tank.
+# Perpendicular turns are gated by this cooldown; 0 = instant (player + most enemies).
+# The Brute sets it high so it oversteers past you, opening a flank/rear window.
+var turn_cooldown := 0.0
+var turn_timer := 0.0
+# When true, this tank actively pushes out of overlap with other tanks each frame (boids
+# separation). Enemies turn it on so a pack can't stack into a single blob; the player leaves
+# it off so the locked movement feel is never perturbed by a shove.
+var separates := false
+const SEP_SPEED := 130.0  # Push-apart speed (px/s). Kept below `speed` so it nudges, not shoves.
 
 func _process(delta: float) -> void:
 	if not get_parent().is_playing():
 		return
 	fire_timer -= delta
+	turn_timer -= delta
 	_decide(delta)
 	if want != Vector2.ZERO:
 		if want == facing or want == -facing:
+			facing = want  # Reversing stays on the same lane — never gated.
+		elif turn_timer <= 0.0 and _can_turn(want):
 			facing = want
-		elif _can_turn(want):
-			facing = want
+			turn_timer = turn_cooldown  # Slow turners commit forward before they can turn again.
 		_move(delta)
 	_glide_to_lane(delta)
+	_separate(delta)
 	queue_redraw()
+
+# Boids-style separation: push directly away from any tank we're overlapping (closer than
+# TANK_SEP). This actively un-stacks a clump — the lane-glide alone keeps yanking crowded tanks
+# back onto the same lane center, so without this they re-merge into a blob. Wall-guarded so we
+# never get shoved into a solid tile. Off for the player (separates == false).
+func _separate(delta: float) -> void:
+	if not separates:
+		return
+	var push := Vector2.ZERO
+	for o in _other_tanks():
+		var d: Vector2 = position - o.position
+		var dist := d.length()
+		if dist > 0.01 and dist < TANK_SEP:
+			push += (d / dist) * (TANK_SEP - dist)  # Weighted: deeper overlap pushes harder.
+	if push == Vector2.ZERO:
+		return
+	var dir := push.normalized()
+	var move := dir * SEP_SPEED * delta
+	if not get_parent().is_solid(position + dir * TANK_RADIUS + move):
+		position += move
 
 func _decide(_delta: float) -> void:
 	pass  # Override in subclass.
@@ -74,9 +106,14 @@ func _move(delta: float) -> void:
 	position = target
 	blocked = hit_wall
 
+# Block a move ONLY if it brings us CLOSER to a tank that's already within separation. Moving
+# away or sideways is always allowed, so two tanks that end up overlapping (the lane-glide can
+# nudge them together — it ignores other tanks) can always slide apart instead of deadlocking.
+# This is what keeps the player from getting permanently pinned when enemies crowd in.
 func _blocked_by_tank(target: Vector2) -> bool:
 	for o in _other_tanks():
-		if facing.dot(o.position - position) > 0.0 and target.distance_to(o.position) < TANK_SEP:
+		var after: float = target.distance_to(o.position)
+		if after < TANK_SEP and after < position.distance_to(o.position):
 			return true
 	return false
 
@@ -130,6 +167,10 @@ func fire() -> void:
 	b.dir = facing
 	b.team = team
 	get_parent().add_child(b)
+	b.add_to_group("bullets")
+	get_parent()._play_sfx("res://sound/TankFire1.wav")
+	if team == TEAM_PLAYER:
+		get_parent().on_player_fired(position)  # Gunshots are heard: nearby enemies wake.
 	fire_timer = fire_cooldown
 
 func _draw() -> void:

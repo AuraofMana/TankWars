@@ -21,7 +21,7 @@ func _ready() -> void:
 	barrel_color = Color(0.2, 0.5, 0.2)
 	speed = 220.0
 	fire_cooldown = 0.22
-	_spawn = _cell_center(8, 9)
+	_spawn = _cell_center(12, 13)
 	position = _spawn
 	add_to_group("player")
 	invuln = RESPAWN_INVULN  # Spawn grace so you never appear straight into a bullet.
